@@ -76,8 +76,19 @@ describe('Canal de administración', () => {
     );
     expect(emit).toHaveBeenCalledWith('admin.message', {
       evento: 'media.lista',
-      datos: { tv_id: 'online', contenido, estado: 'LISTO_PARA_REPRODUCIR' },
+      datos: { tv_id: 'online', contenido },
     });
+    await gateway.handleTvMessage(client, {
+      evento: 'media.lista',
+      tv_id: 'online',
+      url: 'file:///storage/emulated/0/movie.mp4',
+    });
+    expect(registerDownloaded).toHaveBeenCalledWith(
+      'content-1',
+      'db-tv-id',
+      'file:///storage/emulated/0/movie.mp4',
+      file,
+    );
     emit.mockClear();
     registerDownloaded.mockRejectedValueOnce(new Error('DB offline'));
     await gateway.handleTvMessage(client, {
@@ -85,7 +96,22 @@ describe('Canal de administración', () => {
       tv_id: 'online',
       url: 'content://media/1',
     });
-    expect(emit).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith('admin.message', {
+      evento: 'media.lista.error',
+      datos: {
+        tv_id: 'online',
+        message: 'DB offline',
+        code: 'MEDIA_CONFIRM_ERROR',
+      },
+    });
+    expect(emit).toHaveBeenCalledWith('admin.message', {
+      evento: 'error',
+      datos: {
+        tv_id: 'online',
+        message: 'DB offline',
+        code: 'MEDIA_CONFIRM_ERROR',
+      },
+    });
   });
 
   it('notifica una transferencia solo a los sockets del TV destino', () => {

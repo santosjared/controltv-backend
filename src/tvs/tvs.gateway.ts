@@ -20,7 +20,7 @@ import { TvsService } from './tvs.service.js';
 import { EstadoConexionTv } from './entities/tv.entity.js';
 import { TransfersService } from './transfers.service.js';
 import { ContenidosService } from '../contenidos/contenidos.service.js';
-import { TipoContenido } from '../contenidos/entities/contenido.entity.js';
+import type { MediaCommand } from '../contenidos/contenidos.service.js';
 
 export interface ConnectedDevice {
   tvId: string;
@@ -50,6 +50,10 @@ interface TvMessagePayload {
     ip?: unknown;
     model?: unknown;
     version_android?: unknown;
+    contenido_id?: unknown;
+    volumen?: unknown;
+    volume?: unknown;
+    repetir?: unknown;
   };
 }
 
@@ -107,11 +111,23 @@ export class TvsGateway
   @SubscribeMessage('admin.message')
   async handleAdminMessage(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { evento?: string } | null,
+    @MessageBody() payload: TvMessagePayload | null,
   ): Promise<void> {
-    if (payload?.evento === 'devices.status.request') {
-      this.emitPendingDevices(client);
-      await this.emitDeviceStatus(client);
+    if (!payload) return;
+    switch (payload.evento) {
+      case 'devices.status.request':
+        this.emitPendingDevices(client);
+        await this.emitDeviceStatus(client);
+        return;
+      case 'media.play':
+      case 'media.pause':
+      case 'media.stop':
+      case 'media.volume':
+      case 'media.volumen':
+      case 'media.show':
+      case 'media.hide':
+        await this.handleMediaCommand(client, payload, payload.evento);
+        return;
     }
   }
 
@@ -121,12 +137,22 @@ export class TvsGateway
     @MessageBody() payload: string | TvMessagePayload,
   ): Promise<void> {
     if (typeof payload === 'string') {
-      console.log(payload);
       return;
     }
 
     if (!payload || typeof payload !== 'object') return;
     switch (payload.evento) {
+      case 'media.play':
+      case 'media.pause':
+      case 'media.stop':
+      case 'media.volume':
+      case 'media.volumen':
+      case 'media.repeat':
+      case 'media.show':
+      case 'media.hide':
+        await this.handleTvMediaStatus(client, payload, payload.evento);
+        return;
+
       case 'media.lista': {
         const tvId = payload.tv_id;
         if (
@@ -142,12 +168,13 @@ export class TvsGateway
         }
         if (
           typeof payload.url !== 'string' ||
-          !/^content:\/\/[^\s]+$/.test(payload.url) ||
+          !/^(?:content|file):\/\/[^\s]+$/.test(payload.url) ||
           payload.url.length > 8192
         ) {
-          this.emitError(
+          this.emitMediaListError(
             client,
-            'url debe ser una URI content:// válida',
+            tvId,
+            'url debe ser una URI content:// o file:// válida',
             'INVALID_MEDIA_URL',
           );
           return;
@@ -163,16 +190,13 @@ export class TvsGateway
           const datos = {
             tv_id: tvId,
             contenido,
-            estado:
-              contenido.tipo === TipoContenido.VIDEO
-                ? 'LISTO_PARA_REPRODUCIR'
-                : 'MOSTRANDO',
           };
           this.server.emit('admin.message', { evento: 'media.lista', datos });
           client.emit('tv.message', { evento: 'media.confirmada', datos });
         } catch (error) {
-          this.emitError(
+          this.emitMediaListError(
             client,
+            tvId,
             error instanceof Error
               ? error.message
               : 'No se pudo guardar el contenido',
@@ -337,6 +361,210 @@ export class TvsGateway
     this.logger.log(`TV registrada y retirada de pendientes: ${tvId}`);
   }
 
+  private async handleMediaCommand(
+    client: Socket,
+    payload: TvMessagePayload,
+    command: MediaCommand,
+  ): Promise<void> {
+    const tvId = this.readTvId(payload);
+    const contenidoId = payload.datos?.contenido_id;
+    const volumeValue = payload.datos?.volumen ?? payload.datos?.volume;
+    const volumen = typeof volumeValue === 'number' ? volumeValue : undefined;
+    const repetir = payload.datos?.repetir;
+
+    if (!tvId) {
+      this.emitAdminError(client, 'tv_id es obligatorio', 'TV_ID_REQUIRED');
+      return;
+    }
+    if (
+      (command === 'media.play' ||
+        command === 'media.show' ||
+        command === 'media.repeat') &&
+      (typeof contenidoId !== 'string' || !contenidoId)
+    ) {
+      this.emitAdminError(
+        client,
+        'contenido_id es obligatorio para esta acción',
+        'CONTENT_ID_REQUIRED',
+      );
+      return;
+    }
+    if (command === 'media.repeat' && typeof repetir !== 'boolean') {
+      this.emitAdminError(
+        client,
+        'repetir debe ser true o false',
+        'INVALID_REPEAT',
+      );
+      return;
+    }
+    if (
+      (command === 'media.volume' || command === 'media.volumen') &&
+      (!Number.isInteger(volumen) || volumen! < 0 || volumen! > 100)
+    ) {
+      this.emitAdminError(
+        client,
+        'volumen debe ser un entero entre 0 y 100',
+        'INVALID_VOLUME',
+      );
+      return;
+    }
+
+    const target = [...this.activeTvs.entries()].find(
+      ([, tv]) => tv.tvId === tvId,
+    );
+    const targetSocket = target
+      ? this.server.sockets.get(target[0])
+      : undefined;
+    if (!targetSocket) {
+      this.emitAdminError(
+        client,
+        `La TV ${tvId} no está conectada`,
+        'TV_OFFLINE',
+      );
+      return;
+    }
+
+    try {
+      if (!this.contenidos) throw new Error('Servicio no disponible');
+      const tv = await this.tvsService.findOne(tvId);
+      const estado = await this.contenidos.applyMediaCommand(
+        tv.id,
+        command,
+        typeof contenidoId === 'string' ? contenidoId : undefined,
+        volumen,
+        typeof repetir === 'boolean' ? repetir : undefined,
+      );
+      const datos = {
+        tv_id: tvId,
+        ...(typeof contenidoId === 'string' && {
+          contenido_id: contenidoId,
+        }),
+        ...((command === 'media.volume' || command === 'media.volumen') && {
+          volumen,
+        }),
+        ...(command === 'media.repeat' && { repetir }),
+      };
+
+      targetSocket.emit('tv.message', { evento: command, datos });
+      const confirmation = {
+        ...datos,
+        estado_reproduccion: estado.estado_reproduccion,
+        volumen: estado.volumen,
+        repetir: estado.repetir,
+      };
+      client.emit('admin.message', {
+        evento: `${command}.confirmada`,
+        datos: confirmation,
+      });
+      this.server.emit('admin.message', {
+        evento: command,
+        datos: confirmation,
+      });
+    } catch (error) {
+      this.emitAdminError(
+        client,
+        error instanceof Error
+          ? error.message
+          : 'No se pudo ejecutar la acción multimedia',
+        'MEDIA_COMMAND_ERROR',
+      );
+    }
+  }
+
+  private async handleTvMediaStatus(
+    client: Socket,
+    payload: TvMessagePayload,
+    command: Extract<
+      MediaCommand,
+      | 'media.play'
+      | 'media.pause'
+      | 'media.stop'
+      | 'media.volume'
+      | 'media.volumen'
+      | 'media.repeat'
+      | 'media.show'
+      | 'media.hide'
+    >,
+  ): Promise<void> {
+    const tvId = this.readTvId(payload);
+    if (!tvId || this.activeTvs.get(client.id)?.tvId !== tvId) {
+      this.emitError(
+        client,
+        'El socket debe identificarse como la TV indicada',
+        'INVALID_TV',
+      );
+      return;
+    }
+
+    const contenidoId = payload.datos?.contenido_id;
+    const volumeValue = payload.datos?.volumen ?? payload.datos?.volume;
+    const volumen = typeof volumeValue === 'number' ? volumeValue : undefined;
+    const repetir = payload.datos?.repetir;
+
+    if (
+      (command === 'media.play' || command === 'media.repeat') &&
+      (typeof contenidoId !== 'string' || !contenidoId)
+    ) {
+      this.emitError(
+        client,
+        'contenido_id es obligatorio para esta acción',
+        'CONTENT_ID_REQUIRED',
+      );
+      return;
+    }
+    if (
+      (command === 'media.volume' || command === 'media.volumen') &&
+      (!Number.isInteger(volumen) || volumen! < 0 || volumen! > 100)
+    ) {
+      this.emitError(
+        client,
+        'volumen debe ser un entero entre 0 y 100',
+        'INVALID_VOLUME',
+      );
+      return;
+    }
+    if (command === 'media.repeat' && typeof repetir !== 'boolean') {
+      this.emitError(client, 'repetir debe ser true o false', 'INVALID_REPEAT');
+      return;
+    }
+
+    try {
+      if (!this.contenidos) throw new Error('Servicio no disponible');
+      const tv = await this.tvsService.findOne(tvId);
+      const estado = await this.contenidos.applyMediaCommand(
+        tv.id,
+        command,
+        typeof contenidoId === 'string' ? contenidoId : undefined,
+        volumen,
+        typeof repetir === 'boolean' ? repetir : undefined,
+      );
+      const datos = {
+        tv_id: tvId,
+        contenido_id: estado.contenido_id,
+        estado_reproduccion: estado.estado_reproduccion,
+        volumen: estado.volumen,
+        repetir: estado.repetir,
+      };
+
+      client.emit('tv.message', {
+        evento: `${command}.confirmada`,
+        datos,
+      });
+      this.server.emit('admin.message', {
+        evento: command,
+        datos,
+      });
+    } catch (error) {
+      this.emitError(
+        client,
+        error instanceof Error
+          ? error.message
+          : 'No se pudo actualizar el estado multimedia',
+        'MEDIA_STATUS_ERROR',
+      );
+    }
+  }
+
   private readTvId(payload: TvMessagePayload): string | null {
     const candidate = payload.datos?.tvId ?? payload.datos?.tv_id;
     return typeof candidate === 'string' && candidate ? candidate : null;
@@ -353,6 +581,30 @@ export class TvsGateway
 
   private emitError(client: Socket, message: string, code: string): void {
     client.emit('tv.message', {
+      evento: 'error',
+      datos: { message, code },
+    });
+  }
+
+  private emitMediaListError(
+    client: Socket,
+    tvId: string,
+    message: string,
+    code: string,
+  ): void {
+    this.emitError(client, message, code);
+    this.server.emit('admin.message', {
+      evento: 'media.lista.error',
+      datos: { tv_id: tvId, message, code },
+    });
+    this.server.emit('admin.message', {
+      evento: 'error',
+      datos: { tv_id: tvId, message, code },
+    });
+  }
+
+  private emitAdminError(client: Socket, message: string, code: string): void {
+    client.emit('admin.message', {
       evento: 'error',
       datos: { message, code },
     });
