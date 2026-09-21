@@ -13,6 +13,7 @@ import { ConnectTvDto } from './dto/connect-tv.dto.js';
 import { randomBytes } from 'node:crypto';
 import { RegisterTvDto } from './dto/register-tv.dto.js';
 import { Sala } from '../salas/entities/sala.entity.js';
+import { EstadoTv } from '../estados-tv/entities/estado-tv.entity.js';
 @Injectable()
 export class TvsService {
   private readonly temporaryTvIds = new Set<string>();
@@ -141,18 +142,43 @@ export class TvsService {
     return item;
   }
   async update(id: string, dto: UpdateTvDto) {
-    const data = {
-      ...dto,
-      ultimo_contacto: dto.ultimo_contacto
-        ? new Date(dto.ultimo_contacto)
-        : undefined,
-    };
-    const item = await this.repo.preload({ id, ...data });
-    if (!item) throw new NotFoundException(`TV ${id} no encontrada`);
-    return this.repo.save(item);
+    const item = await this.findOne(id);
+    if (dto.tv_id !== item.tv_id)
+      throw new BadRequestException(
+        `El tv_id del cuerpo debe corresponder a la TV ${item.tv_id}`,
+      );
+
+    const updated = await this.dataSource.transaction(async (manager) => {
+      const tvRepository = manager.getRepository(Tv);
+      const salaRepository = manager.getRepository(Sala);
+      const sala = await salaRepository.findOneBy({ id: dto.sala_id });
+      if (!sala)
+        throw new NotFoundException(`Sala ${dto.sala_id} no encontrada`);
+
+      await salaRepository.save({
+        ...sala,
+        nombre: dto.sala,
+        ubicacion: dto.ubicacion,
+      });
+      return tvRepository.save({
+        ...item,
+        nombre: dto.nombre,
+        sala_id: dto.sala_id,
+      });
+    });
+    return this.findOne(updated.id);
   }
+
   async remove(id: string) {
     const item = await this.findOne(id);
-    await this.repo.remove(item);
+    await this.dataSource.transaction(async (manager) => {
+      // Refuerzo a nivel de aplicación además del ON DELETE CASCADE de la FK.
+      await manager.delete(EstadoTv, { tv_id: item.id });
+      const result = await manager.delete(Tv, { id: item.id });
+      if (!result.affected)
+        throw new NotFoundException(`TV ${id} no encontrada`);
+    });
+    this.temporaryTvIds.delete(item.tv_id);
+    return { id: item.id, tv_id: item.tv_id, deleted: true };
   }
 }

@@ -113,6 +113,7 @@ export class TvsGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: TvMessagePayload | null,
   ): Promise<void> {
+    console.log(`Mensaje recibido de admin (${client.id}):`, payload);
     if (!payload) return;
     switch (payload.evento) {
       case 'devices.status.request':
@@ -124,6 +125,7 @@ export class TvsGateway
       case 'media.stop':
       case 'media.volume':
       case 'media.volumen':
+      case 'media.repeat':
       case 'media.show':
       case 'media.hide':
         await this.handleMediaCommand(client, payload, payload.evento);

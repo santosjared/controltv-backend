@@ -4,9 +4,8 @@ import {
   Delete,
   Get,
   Param,
-  ParseUUIDPipe,
-  Patch,
   Post,
+  Put,
 } from '@nestjs/common';
 import { TvsService } from './tvs.service.js';
 import { CreateTvDto } from './dto/create-tv.dto.js';
@@ -45,10 +44,10 @@ export class TvsController {
   @Get(':id') findOne(@Param('id') id: string) {
     return this.service.findOne(id);
   }
-  @Patch(':id') update(@Param('id') id: string, @Body() dto: UpdateTvDto) {
+  @Put(':id') update(@Param('id') id: string, @Body() dto: UpdateTvDto) {
     return this.service.update(id, dto);
   }
-  @Delete(':id') remove(@Param('id', ParseUUIDPipe) id: string) {
+  @Delete(':id') remove(@Param('id') id: string) {
     return this.service.remove(id);
   }
 }

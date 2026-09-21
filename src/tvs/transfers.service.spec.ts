@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TRANSFER_DIR, TransfersService } from './transfers.service.js';
 
@@ -74,5 +74,40 @@ describe('Transferencias temporales', () => {
     await expect(access(path)).rejects.toThrow();
     expect(service.pending('TV-3')).toEqual([]);
     await service.onModuleDestroy();
+  });
+
+  it('crea una copia independiente y una transferencia para cada TV', async () => {
+    await mkdir(TRANSFER_DIR, { recursive: true });
+    const path = join(TRANSFER_DIR, 'multi-media');
+    await writeFile(path, 'media');
+    const transfers = await service.createMany(['TV-10', 'TV-20'], 'admin', {
+      path,
+      size: 5,
+      originalname: 'movie.mp4',
+      mimetype: 'video/mp4',
+    });
+
+    expect(transfers).toHaveLength(2);
+    expect(transfers.map((item) => item.tv_id)).toEqual(['TV-10', 'TV-20']);
+    const firstToken = new URL(
+      transfers[0].downloadUrl,
+      'http://localhost',
+    ).searchParams.get('token');
+    const secondToken = new URL(
+      transfers[1].downloadUrl,
+      'http://localhost',
+    ).searchParams.get('token');
+    const firstFile = service.get('TV-10', transfers[0].transferId, firstToken);
+    const secondFile = service.get(
+      'TV-20',
+      transfers[1].transferId,
+      secondToken,
+    );
+    expect(firstFile.path).not.toBe(secondFile.path);
+
+    await service.confirm('TV-10', transfers[0].transferId, firstToken);
+    await access(secondFile.path);
+    await service.confirm('TV-20', transfers[1].transferId, secondToken);
+    await rm(path, { force: true });
   });
 });

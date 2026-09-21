@@ -131,6 +131,64 @@ describe('Canal de administración', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it('guarda media.repeat enviado por el admin y lo comunica a la TV', async () => {
+    const tvEmit = vi.fn();
+    const applyMediaCommand = vi.fn(async () => ({
+      estado_reproduccion: 'PLAYING',
+      volumen: 50,
+      repetir: true,
+    }));
+    Object.assign(gateway, {
+      activeTvs: new Map([['tv-socket', { tvId: 'TV-E4C95577-2A7' }]]),
+      server: {
+        emit,
+        sockets: new Map([
+          [client.id, client],
+          ['tv-socket', { emit: tvEmit }],
+        ]),
+      },
+      contenidos: { applyMediaCommand },
+      tvsService: {
+        findOne: vi.fn(async () => ({
+          id: 'tv-db-id',
+          tv_id: 'TV-E4C95577-2A7',
+        })),
+      },
+    });
+
+    await gateway.handleAdminMessage(client, {
+      evento: 'media.repeat',
+      datos: {
+        tv_id: 'TV-E4C95577-2A7',
+        contenido_id: '64c9725a-8411-4516-9d45-189e2a66a016',
+        repetir: true,
+      },
+    });
+
+    expect(applyMediaCommand).toHaveBeenCalledWith(
+      'tv-db-id',
+      'media.repeat',
+      '64c9725a-8411-4516-9d45-189e2a66a016',
+      undefined,
+      true,
+    );
+    expect(tvEmit).toHaveBeenCalledWith('tv.message', {
+      evento: 'media.repeat',
+      datos: {
+        tv_id: 'TV-E4C95577-2A7',
+        contenido_id: '64c9725a-8411-4516-9d45-189e2a66a016',
+        repetir: true,
+      },
+    });
+    expect(emit).toHaveBeenCalledWith('admin.message', {
+      evento: 'media.repeat',
+      datos: expect.objectContaining({
+        tv_id: 'TV-E4C95577-2A7',
+        repetir: true,
+      }),
+    });
+  });
+
   it('envía el estado inicial y permite solicitarlo por el mismo canal', async () => {
     await gateway.handleConnection(client);
     const expected = {

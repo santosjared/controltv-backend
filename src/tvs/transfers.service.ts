@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -55,6 +55,55 @@ export class TransfersService implements OnModuleDestroy {
     };
     this.transfers.set(transfer.id, transfer);
     return this.describe(transfer);
+  }
+
+  async createMany(
+    tvIds: string[],
+    senderId: string | null,
+    sourceFile: MediaFile,
+  ) {
+    const uniqueTvIds = [...new Set(tvIds)];
+    if (uniqueTvIds.length !== tvIds.length)
+      throw new BadRequestException('tv_ids no puede contener IDs repetidos');
+    if (!sourceFile.size)
+      throw new BadRequestException('El archivo está vacío');
+
+    for (const tvId of uniqueTvIds) {
+      if (
+        [...this.transfers.values()].some(
+          (t) => t.tvId === tvId && (t.completing || t.expiresAt > Date.now()),
+        )
+      ) {
+        throw new ConflictException(
+          `La TV ${tvId} ya tiene una transferencia pendiente`,
+        );
+      }
+    }
+
+    const created: Transfer[] = [];
+    try {
+      for (const tvId of uniqueTvIds) {
+        const path = join(TRANSFER_DIR, randomUUID());
+        await copyFile(sourceFile.path, path);
+        const transfer: Transfer = {
+          id: randomUUID(),
+          tvId,
+          senderId,
+          file: { ...sourceFile, path },
+          token: randomBytes(32).toString('hex'),
+          expiresAt: Date.now() + 3_600_000,
+        };
+        this.transfers.set(transfer.id, transfer);
+        created.push(transfer);
+      }
+      return created.map((transfer) => this.describe(transfer));
+    } catch (error) {
+      for (const transfer of created) {
+        this.transfers.delete(transfer.id);
+        await rm(transfer.file.path, { force: true });
+      }
+      throw error;
+    }
   }
 
   pending(tvId: string) {
