@@ -5,6 +5,8 @@ import { ContenidosModule } from './contenidos/contenidos.module.js';
 import { EstadosTvModule } from './estados-tv/estados-tv.module.js';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuthModule } from './auth/auth.module.js';
+import { PlaylistsModule } from './playlists/playlists.module.js';
 
 @Module({
   imports: [
@@ -26,6 +28,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
     TvsModule,
     ContenidosModule,
     EstadosTvModule,
+    AuthModule,
+    PlaylistsModule,
   ],
 })
 export class AppModule {}

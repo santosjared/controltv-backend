@@ -21,6 +21,10 @@ export class Contenido {
   @Column({ type: 'varchar', length: 20 }) tipo: TipoContenido;
   @Column({ type: 'text' }) url: string;
   @Column({ type: 'bigint', nullable: true }) tamano_bytes: string | null;
+  @Column({ type: 'boolean', default: false }) deleted: boolean;
+  @Column({ type: 'varchar', nullable: true, select: false }) archivo:
+    string | null;
+  @Column({ type: 'timestamptz', nullable: true }) subido_at: Date | null;
   @OneToMany(() => EstadoTv, (estado) => estado.contenido)
   estados_tv: Relation<EstadoTv[]>;
 }

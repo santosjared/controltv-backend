@@ -13,6 +13,8 @@ describe('Canal de administración', () => {
     id: 'socket-1',
     conn: { on: vi.fn() },
     emit: clientEmit,
+    handshake: { auth: { token: 'test-token' }, headers: {} },
+    join: vi.fn(async () => undefined),
   } as unknown as Socket;
 
   beforeEach(() => {
@@ -31,10 +33,68 @@ describe('Canal de administración', () => {
     } as unknown as TvsService);
     Object.assign(gateway, {
       server: { emit, sockets: new Map([[client.id, client]]) },
+      auth: {
+        verify: vi.fn(() => ({ sub: 'admin', permissions: ['tvs.control'] })),
+        ensureActiveUser: vi.fn(),
+      },
     });
   });
 
   afterEach(() => gateway.onModuleDestroy());
+
+  it('rechaza órdenes sin autenticación y no las envía a la TV', async () => {
+    const prepare = vi.fn();
+    Object.assign(gateway, {
+      playback: { prepare },
+      auth: {
+        verify: vi.fn(() => {
+          throw new Error('Token expirado');
+        }),
+      },
+    });
+    await gateway.handleAdminMessage(client, {
+      evento: 'media.stop',
+      datos: { tv_id: 'online' },
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(clientEmit).toHaveBeenCalledWith('admin.message', {
+      evento: 'media.error',
+      datos: { tv_id: 'online', code: 'FORBIDDEN', message: 'Token expirado' },
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('devuelve TV_OFFLINE y no prepara archivos para una TV desconectada', async () => {
+    const prepare = vi.fn();
+    Object.assign(gateway, {
+      playback: {
+        validate: (_command: unknown, data: unknown) => data,
+        prepare,
+      },
+    });
+    await gateway.handleAdminMessage(client, {
+      evento: 'media.stop',
+      datos: { tv_id: 'offline' },
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(clientEmit).toHaveBeenCalledWith(
+      'admin.message',
+      expect.objectContaining({
+        evento: 'media.error',
+        datos: expect.objectContaining({
+          tv_id: 'offline',
+          code: 'TV_OFFLINE',
+        }),
+      }),
+    );
+  });
+
+  it('ignora JSON malformado sin ejecutar órdenes', async () => {
+    await gateway.handleAdminMessage(client, '{broken');
+    await gateway.handleTvMessage(client, '{broken');
+    expect(clientEmit).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
 
   it('procesa media.lista del TV identificado y avisa al administrador después de guardar', async () => {
     const contenido = {
@@ -51,7 +111,10 @@ describe('Canal de administración', () => {
     );
     Object.assign(gateway, {
       activeTvs: new Map([[client.id, { tvId: 'online' }]]),
-      transfers: { complete },
+      transfers: {
+        complete,
+        pending: vi.fn(() => [{ transferId: 'content-1' }]),
+      },
       contenidos: { registerDownloaded },
       tvsService: {
         findOne: vi.fn(async () => ({ id: 'db-tv-id', tv_id: 'online' })),
@@ -131,64 +194,64 @@ describe('Canal de administración', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
-  it('guarda media.repeat enviado por el admin y lo comunica a la TV', async () => {
+  it('envía repeat por admin.message y espera la confirmación real de la TV', async () => {
     const tvEmit = vi.fn();
-    const applyMediaCommand = vi.fn(async () => ({
-      estado_reproduccion: 'PLAYING',
-      volumen: 50,
+    const tvClient = { id: 'tv-socket', emit: tvEmit } as unknown as Socket;
+    const data = {
+      tv_id: 'TV-E4C95577-2A7',
+      contenido_id: '64c9725a-8411-4516-9d45-189e2a66a016',
       repetir: true,
-    }));
+    };
+    const confirm = vi.fn(async () => data);
     Object.assign(gateway, {
-      activeTvs: new Map([['tv-socket', { tvId: 'TV-E4C95577-2A7' }]]),
+      activeTvs: new Map([[tvClient.id, { tvId: data.tv_id }]]),
       server: {
         emit,
+        to: () => ({ emit }),
         sockets: new Map([
           [client.id, client],
-          ['tv-socket', { emit: tvEmit }],
+          [tvClient.id, tvClient],
         ]),
       },
-      contenidos: { applyMediaCommand },
-      tvsService: {
-        findOne: vi.fn(async () => ({
-          id: 'tv-db-id',
-          tv_id: 'TV-E4C95577-2A7',
-        })),
+      playback: {
+        validate: vi.fn((_command, raw) => raw),
+        prepare: vi.fn(async (_command, raw) => raw),
+        confirm,
       },
+      tvsService: { findOne: vi.fn(async () => ({ id: 'db-tv-id' })) },
     });
-
-    await gateway.handleAdminMessage(client, {
-      evento: 'media.repeat',
-      datos: {
-        tv_id: 'TV-E4C95577-2A7',
-        contenido_id: '64c9725a-8411-4516-9d45-189e2a66a016',
-        repetir: true,
-      },
-    });
-
-    expect(applyMediaCommand).toHaveBeenCalledWith(
-      'tv-db-id',
-      'media.repeat',
-      '64c9725a-8411-4516-9d45-189e2a66a016',
-      undefined,
-      true,
+    await gateway.handleAdminMessage(
+      client,
+      JSON.stringify({ evento: 'media.repeat', datos: data }),
     );
-    expect(tvEmit).toHaveBeenCalledWith('tv.message', {
+    expect(tvEmit).toHaveBeenCalledWith('admin.message', {
       evento: 'media.repeat',
-      datos: {
-        tv_id: 'TV-E4C95577-2A7',
-        contenido_id: '64c9725a-8411-4516-9d45-189e2a66a016',
-        repetir: true,
-      },
+      datos: data,
     });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+    // Otro socket no puede confirmar por la TV ni provocar una difusión.
+    await gateway.handleTvMessage(client, {
+      evento: 'media.repeat',
+      datos: data,
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    await gateway.handleAdminMessage(tvClient, {
+      evento: 'media.repeat',
+      datos: data,
+    });
+    expect(confirm).toHaveBeenCalledWith('db-tv-id', 'media.repeat', data);
     expect(emit).toHaveBeenCalledWith('admin.message', {
       evento: 'media.repeat',
-      datos: expect.objectContaining({
-        tv_id: 'TV-E4C95577-2A7',
-        repetir: true,
-      }),
+      datos: data,
     });
+    expect(tvEmit).toHaveBeenCalledTimes(1);
+    await gateway.handleAdminMessage(tvClient, {
+      evento: 'media.repeat',
+      datos: data,
+    });
+    expect(confirm).toHaveBeenCalledTimes(1);
   });
-
   it('envía el estado inicial y permite solicitarlo por el mismo canal', async () => {
     await gateway.handleConnection(client);
     const expected = {
@@ -207,6 +270,35 @@ describe('Canal de administración', () => {
       evento: 'devices.status.request',
     });
     expect(clientEmit).toHaveBeenLastCalledWith('admin.message', expected);
+  });
+
+  it('restaura reproducción y opciones del panel al reconectar sin enviar órdenes a la TV', async () => {
+    tvs[0].estado = {
+      estado_reproduccion: 'PAUSED',
+      contenido_id: null,
+      playlist_id: '84d23cd1-f4a0-4439-98f7-bfd344ba3f7f',
+      volumen: 35,
+      repetir: true,
+      aleatorio: false,
+    } as Tv['estado'];
+    const panelEmit = vi.fn();
+    const panel = {
+      ...client,
+      rooms: new Set(['playback.admins']),
+      emit: panelEmit,
+    } as unknown as Socket;
+    await gateway.handleConnection(panel);
+    expect(panelEmit).toHaveBeenCalledWith('admin.message', {
+      evento: 'media.pause',
+      datos: {
+        tv_id: 'online',
+        playlist_id: '84d23cd1-f4a0-4439-98f7-bfd344ba3f7f',
+        volumen: 35,
+        repetir: true,
+        aleatorio: false,
+      },
+    });
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it('publica pendientes, registro y desconexión sin eventos anteriores', async () => {

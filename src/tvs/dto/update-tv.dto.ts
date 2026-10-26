@@ -1,4 +1,11 @@
-import { IsString, IsUUID, Matches, MaxLength } from 'class-validator';
+import {
+  IsIP,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 export class UpdateTvDto {
   @Matches(/^TV-[0-9A-F]{8}-[0-9A-F]{3}$/)
@@ -18,4 +25,18 @@ export class UpdateTvDto {
   @IsString()
   @MaxLength(200)
   ubicacion: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  model?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  version_android?: string;
+
+  @IsOptional()
+  @IsIP()
+  ip?: string;
 }

@@ -21,6 +21,8 @@ import {
 import type { MediaFile } from './transfers.service.js';
 import { TvsService } from './tvs.service.js';
 import { TvsGateway } from './tvs.gateway.js';
+import { Public } from '../auth/decorators/public.decorator.js';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator.js';
 
 const mediaUploadInterceptor = FileInterceptor('file', {
   dest: TRANSFER_DIR,
@@ -52,6 +54,7 @@ export class TransfersController {
   ) {}
 
   @Post('transferencias')
+  @RequirePermissions('content.send')
   @UseInterceptors(mediaUploadInterceptor)
   async uploadMany(
     @Body() body: { tv_ids?: unknown; ids?: unknown; senderId?: unknown },
@@ -78,6 +81,7 @@ export class TransfersController {
   }
 
   @Post(':tv_id/transferencias')
+  @RequirePermissions('content.send')
   @UseInterceptors(mediaUploadInterceptor)
   async upload(
     @Param('tv_id') tv_id: string,
@@ -102,6 +106,7 @@ export class TransfersController {
   }
 
   @Get(':tv_id/transferencias/:id/archivo')
+  @Public()
   download(
     @Param('tv_id') tv_id: string,
     @Param('id') id: string,
@@ -116,6 +121,7 @@ export class TransfersController {
   }
 
   @Post(':tv_id/transferencias/:id/confirmar')
+  @Public()
   confirm(
     @Param('tv_id') tv_id: string,
     @Param('id') id: string,

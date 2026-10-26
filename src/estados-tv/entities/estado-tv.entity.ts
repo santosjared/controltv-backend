@@ -28,6 +28,8 @@ export enum EstadoReproduccion {
 export class EstadoTv {
   @PrimaryColumn('uuid') tv_id: string;
   @Column({ type: 'uuid', nullable: true }) contenido_id: string | null;
+  @Column({ type: 'uuid', nullable: true }) playlist_id: string | null;
+  @Column({ type: 'boolean', default: false }) aleatorio: boolean;
   @Column({ type: 'varchar', length: 20, default: EstadoReproduccion.STOPPED })
   estado_reproduccion: EstadoReproduccion;
   @Column({ type: 'integer', default: 0 }) posicion_segundos: number;

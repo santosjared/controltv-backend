@@ -220,3 +220,52 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
 
 
+
+
+### Archivos de contenidos
+
+- `POST /contenidos/archivos`: multipart con campo `files` repetido, entre 1 y 6 imágenes/videos por solicitud y máximo 6 archivos almacenados simultáneamente para todo el sistema; eliminar un archivo libera un espacio, máximo 100 MiB (104857600 bytes) por archivo. Devuelve un array de contenidos. Requiere `content.upload`.
+- `POST /contenidos`: conserva el registro de contenido por metadatos/URL.
+- `GET /contenidos?page=1&limit=10&search=texto&type=VIDEO`: devuelve `{ data, total }`, busca por nombre/tipo con las mismas coincidencias de los otros CRUD; límite máximo 100. El filtro opcional `type` acepta `VIDEO` o `IMAGEN`; al omitirlo lista ambos. Un valor diferente devuelve 400. El total corresponde a los filtros aplicados.
+- `GET /contenidos/:id` y `GET /contenidos/:id/archivo`: consulta y descarga autenticadas con `content.view`.
+- `PATCH /contenidos/:id`: actualiza metadatos con `content.upload`.
+- `DELETE /contenidos/:id`: marca `deleted=true`; borra el archivo local si existe y conserva el registro marcado como eliminado. Requiere `content.delete`.
+
+Los archivos subidos se guardan en `CONTENT_UPLOAD_DIR` (por defecto `uploads/contenidos`). A las 00:00 de Bolivia (America/La_Paz, UTC-4) se borran los archivos de días anteriores sin cambiar el estado de sus registros. Al iniciar se recupera la limpieza pendiente. La limpieza solo administra archivos de este directorio; las URL externas y los archivos ya descargados en TVs no se eliminan. El proceso del backend debe estar ejecutándose para realizar la tarea a medianoche.
+
+La entidad contenidos añade las columnas `deleted` (boolean, default false) , `archivo` (varchar nullable) y `subido_at` (timestamptz nullable para registrar la fecha de carga). En instalaciones con `DB_SYNCHRONIZE=false`, aplicar estas columnas mediante una migración antes de iniciar.
+
+### Playlists
+
+El protocolo de reproducción por el canal `admin.message` está documentado en
+[docs/socket-playback.md](docs/socket-playback.md). Incluye playlists, contenido
+individual, repetir, aleatorio y confirmaciones enviadas por la TV.
+El panel puede enviar `request_id` y `tv_ids` para una o varias TVs y recibir
+`media.result` por destinatario después de la confirmación o del error. Se conserva
+el formato individual anterior para la transición.
+
+Requiere autenticación y permisos `playlists.view` para consultar o `playlists.manage` para modificar.
+
+| Método | Ruta | Uso |
+| --- | --- | --- |
+| GET | `/playlists?page=1&limit=10&search=sala` | Búsqueda por nombre y descripción, devuelve `{ data, total }`. Página inicial 1; límite predeterminado 10, máximo 100. |
+| GET | `/playlists/:id` | Detalle con contenido y elementos ordenados. |
+| POST | `/playlists` | Crear con `{ "nombre": "Sala de espera", "descripcion": "Información para pacientes" }`. |
+| PUT | `/playlists/:id` | Editar nombre y/o descripción. |
+| DELETE | `/playlists/:id` | Eliminar la lista y sus elementos; conserva los contenidos originales. |
+| POST | `/playlists/:id/duplicar` | Crear una copia con los mismos contenidos, duraciones y orden. |
+| POST | `/playlists/:id/items` | Agregar imagen o video con `{ "contenido_id": "UUID", "duracion_segundos": 12 }`. |
+| DELETE | `/playlists/:id/items/:itemId` | Quitar un elemento de la lista. |
+| PUT | `/playlists/:id/orden` | Guardar `{ "item_ids": ["UUID-item-2", "UUID-item-1"] }` con todos los IDs de elementos, una vez cada uno. |
+
+La creación admite un array opcional `items` con `contenido_id`, `duracion_segundos` (1–3600) y `orden` opcional (desde 0). Al agregar contenido, omitir `orden` lo coloca al final; un orden ocupado devuelve 400. No se admiten contenidos marcados como eliminados. Los cambios de orden se guardan en una transacción.
+
+Cada playlist incluye `total_elementos` y `duracion_total_segundos`, además de `items` con su `contenido`, `created_at` y `updated_at`. El listado devuelve ahora un objeto paginado en lugar del array anterior. Las rutas `/playlists/:id/imagenes` y `/playlists/:id/imagenes/:itemId` y el campo de creación `imagenes` se conservan como alias; enviar `items` e `imagenes` juntos devuelve 400.
+
+Las entidades usan las tablas `playlists` y `playlist_items`, con orden único por playlist y eliminación en cascada de sus elementos. Si todavía no existen y `DB_SYNCHRONIZE=false`, deben crearse mediante una migración antes de usar estas rutas.
+
+Contenido actual en reproducción: la TV informa `media.play` con `origen: "tv"` y `contenido_actual_id` al iniciar cada video o mostrar cada imagen de una playlist. No cambia `playlist_id`: el backend valida que el contenido pertenezca a la selección activa y guarda su ID en el estado. Los eventos confirmados y la instantánea del panel incluyen `contenido_actual: { id, nombre, tipo }`; esto permite conservar el nombre aunque la limpieza haya eliminado el archivo físico. La vista previa usa el endpoint de archivos autenticado del panel y muestra fondo oscuro si no está disponible. Al reemplazar contenido, Android elimina las descargas anteriores y descarta también listas incompletas; espera a que finalice la limpieza de la descarga cancelada antes de iniciar otra.
+
+Preparación y aprobación: los envíos de la biblioteca usan `auto_reproducir: false` en `media.play`/`media.show`. La TV confirma la descarga mediante `media.result`, pero conserva el contenido detenido y oculto. Solo un Play/Mostrar explícito autoriza reproducción (`auto_reproducir: true` si incluye una nueva selección, o `media.play` sin selección para el contenido local preparado). Si falta la opción en un envío, el backend usa false. Al perder conexión y al iniciar el backend, el estado guardado se restablece a STOPPED; la app también detiene/cancela localmente y no reanuda contenido al reconectar. Los televisores deben usar la APK actualizada para respetar esta opción.
+
+La verificación integral de login, módulos, permisos y comunicación está documentada en [docs/integration-verification.md](docs/integration-verification.md). Incluye los comandos de pruebas HTTP en PostgreSQL aislado y las correcciones de sesión de Next.js.
