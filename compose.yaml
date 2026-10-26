@@ -1,0 +1,116 @@
+name: ${COMPOSE_PROJECT_NAME:-tvcontrol}
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-tvcontrol}
+      POSTGRES_USER: ${DB_USERNAME:-tvcontrol}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Ejecuta node docker/setup.mjs}
+      TZ: America/La_Paz
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    image: tvcontrol-backend:local
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USERNAME: ${DB_USERNAME:-tvcontrol}
+      DB_PASSWORD: ${DB_PASSWORD:?Ejecuta node docker/setup.mjs}
+      DB_DATABASE: ${DB_DATABASE:-tvcontrol}
+      DB_SYNCHRONIZE: ${DB_SYNCHRONIZE:-true}
+      JWT_SECRET: ${JWT_SECRET:?Ejecuta node docker/setup.mjs}
+      JWT_EXPIRES_SECONDS: ${JWT_EXPIRES_SECONDS:-28800}
+      REFRESH_TOKEN_EXPIRES_SECONDS: ${REFRESH_TOKEN_EXPIRES_SECONDS:-2592000}
+      PLAYBACK_DOWNLOAD_TIMEOUT_MS: ${PLAYBACK_DOWNLOAD_TIMEOUT_MS:-900000}
+      CONTENT_UPLOAD_DIR: /app/uploads/contenidos
+      TZ: America/La_Paz
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    volumes:
+      - media_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/auth/me').then(r=>process.exit(r.status===401?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+
+  admin-init:
+    image: tvcontrol-backend:local
+    restart: "no"
+    command: [node, docker/bootstrap-admin.mjs]
+    environment:
+      API_BASE_URL: http://backend:3000
+      BOOTSTRAP_NAME: ${BOOTSTRAP_NAME:-Administrador}
+      BOOTSTRAP_CI: ${BOOTSTRAP_CI:-ADMIN-LOCAL-001}
+      BOOTSTRAP_USER: ${BOOTSTRAP_USER:-admin}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Ejecuta node docker/setup.mjs}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    image: tvcontrol-frontend:local
+    build:
+      context: ${FRONTEND_CONTEXT:-../controltv}
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SOCKET_URL: /tvs
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: "3001"
+      API_BASE_URL: http://backend:3000
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
+
+  gateway:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3001}:8080"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      admin-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080/login]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  media_data:

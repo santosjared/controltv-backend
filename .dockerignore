@@ -1,0 +1,13 @@
+node_modules
+.pnpm-store
+dist
+build
+coverage
+.git
+.env
+.env.*
+uploads
+*.log
+*.tsbuildinfo
+.idea
+.vscode

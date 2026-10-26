@@ -1,3 +1,14 @@
+## Inicio rápido con Docker Compose
+
+Con Docker Desktop iniciado y el frontend en `../controltv`, ejecutar desde este repositorio:
+
+```powershell
+node docker/setup.mjs
+docker compose --env-file .env.docker up -d --build
+```
+
+Panel: http://localhost:3001. Usuario inicial: `admin`; contraseña en `BOOTSTRAP_PASSWORD` de `.env.docker`. Se crea una base de datos nueva con volúmenes persistentes. Ver [guía Docker](docs/docker.md) para puertos, red local, configuración y comandos de parada.
+
 <p align="center">
   <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
 </p>
